@@ -1,0 +1,101 @@
+import seaborn as sns
+import pandas as pd
+import numpy as np
+import os
+from datetime import datetime, date, timedelta
+import argparse
+import azureml.core
+import joblib
+import math
+import sklearn
+from azureml.core import Workspace, Dataset, Datastore
+from azureml.core.compute import ComputeTarget
+from azureml.core.runconfig import RunConfiguration 
+from azureml.core.conda_dependencies import CondaDependencies 
+from azureml.core import Environment 
+from azureml.pipeline.steps import PythonScriptStep
+from azureml.pipeline.core import Pipeline
+from azureml.core import Experiment
+from azureml.core.authentication import InteractiveLoginAuthentication
+
+#define workspace
+ws = Workspace.from_config()
+
+compute_name = "mlops"
+vm_size = "Standard_DS3_v2"
+compute_target = ws.compute_targets[compute_name]
+
+#Declaring environment
+aml_config = RunConfiguration()
+aml_config.target = compute_target 
+
+USE_CURATEDUENV = True 
+if USE_CURATEDUENV:
+    curated_env = Environment.get(workspace = ws, name="AzureML-sklearn-0.24-ubuntu18.04-py37-cpu")
+    aml_config.environment = curated_env
+else:
+    aml_config.environment.python.user_managed_dependencies = False
+    #inside this env, setting up what all libraries will be needed
+    aml_config.environment.python.conda_dependencies = CondaDependencies.create(
+    #Package that will be required during the prep step
+    conda_packages=['pandas','scikit-learn'],
+    pip_packages=['azureml-sdk', 'azureml-dataset-runtime[fuse, pandas]', 'seaborn'],
+    pin_sdk_version = False)
+
+#Pipeline
+read_data = "data_ingestion.py"
+prep = "data_preprosessing.py"
+model = "modeling.py"
+
+#Script initialization
+py_script_run_read = PythonScriptStep(
+                script_name=read_data,
+                compute_target=compute_target,
+                arguments=['--input-data',"diabetes.csv"],
+                runconfig = aml_config,
+                allow_reuse=False)
+
+py_script_run_prep = PythonScriptStep(
+                script_name=prep,
+                compute_target=compute_target,
+                arguments=['--prep',"ingestion.csv"],
+                runconfig = aml_config,
+                allow_reuse=False)
+
+py_script_run_model = PythonScriptStep(
+                script_name=model,
+                compute_target=compute_target,
+                arguments=['--train',"preprocessed.csv"],
+                runconfig = aml_config,
+                 allow_reuse=False)
+pipeline_step = [py_script_run_read, py_script_run_prep, py_script_run_model]
+pipeline_1 = Pipeline(workspace=ws, steps=[pipeline_step])
+
+#Exp1
+pipeline_run = Experiment(ws, "First_run8").submit(pipeline_1)
+pipeline_run.wait_for_completion(show_output=True)
+
+#Exp2
+pipeline_run = Experiment(ws, "Second_run").submit(pipeline_1)
+pipeline_run.wait_for_completion(show_output=True)
+
+datastore= Datastore.get(ws, "workspaceblobstore")
+datastore.download(target_path= "azureml", prefix= "model_estimator", overwrite=False)
+
+from azureml.core.model import Model
+fine_tuned_model= Model.register(model_name="rf_model_500",
+model_path="./azureml/model_estimator_500.pkl",
+tags={},
+description= "Diabetes model",
+workspace=ws)
+
+model= Model(ws,name='rf_model_500')
+print("Loaded model version",model.version)
+
+from azureml.core import Environment
+
+env = Environment("deploytocloudenv")
+env.python.conda_dependencies.add_pip_package("joblib")
+env.python.conda_dependencies.add_pip_package("numpy==1.23")
+env.python.conda_dependencies.add_pip_package("scikit-learn=={}".format(sklearn.__version__))
+
