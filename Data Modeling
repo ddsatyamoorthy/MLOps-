@@ -1,0 +1,115 @@
+from azureml.core import Workspace, Dataset, Datastore
+import pandas as pd
+import numpy as np
+import argparse
+import math
+import joblib
+import sklearn
+import os
+from datetime import datetime, date, timedelta
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import mean_squared_error, f1_score, recall_score, precision_score
+
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+from azureml.core.authentication import InteractiveLoginAuthentication
+from azureml.core import Run
+
+#------------------------------Auth-------------------------------#
+interactive_auth = InteractiveLoginAuthentication(tenant_id="3ff0d950-c929-40cd-858d-6d3cbab9e019", force=True)
+
+ws = Workspace(subscription_id = "65d70b70-d4be-4959-8834-424810a76ea4",
+                workspace_name = "diabetes_prediction",
+                resource_group = "mlops_project",
+                auth = interactive_auth)
+
+
+#------------------------------Data Import-------------------------------#
+
+
+data_store_name = "workspaceblobstore"
+container_name = os.getenv("BLOB_CONTAINER", "diabetesmlops")
+account_name = os.getenv("BLOB_ACCOUNTNAME", "diabetesmlops")
+
+datastore = Datastore.get(ws, data_store_name)
+
+#------------------------------Argparser-------------------------------#
+parser = argparse.ArgumentParser()
+parser.add_argument("--train", type=str)
+args = parser.parse_args()
+
+
+#------------------------------Read_data-------------------------------#
+#df = Dataset.Tabular.from_delimited_files(path=[(datastore, "diabetes.csv")]).to_pandas_dataframe()
+df = Dataset.Tabular.from_delimited_files(path=[(datastore, args.train)]).to_pandas_dataframe()
+
+
+datastore = Datastore.get(ws, 'workspaceblobstore')
+
+from azureml.core import Run
+run = Run.get_context()
+
+#-----------------------------XX-----------------------------------#
+
+print("Shape of Dataframe", df.shape)
+#-----------------------------XX-----------------------------------#
+
+
+target_name='Outcome'
+y = df[target_name]
+X = df.drop(target_name,axis=1)
+
+#Splitting
+test_size = 0.2
+X_train, X_test, y_train, y_test= train_test_split(X,y,test_size=test_size,random_state=0)#splitting data in 80% train, 20%test
+
+# define models and parameters
+n_estimators = [100, 200, 500]
+
+# define grid search
+run= Run.get_context()
+for i in n_estimators:
+    model_rf = RandomForestClassifier(n_estimators=i).fit(X_train, y_train)
+    pred_rf=model_rf.predict(X_test)
+    rmse = math.sqrt(mean_squared_error(y_true = y_test, y_pred = pred_rf))
+    run.log("rmse", rmse)
+    run.log("train_split_size", X_train.size)
+    run.log("test_split_size", test_size)
+    run.log("n_estimators", i)
+    run.log("precision", precision_score(y_test,pred_rf))
+    run.log("f1-score", f1_score(y_test,pred_rf))
+    run.log("recall", recall_score(y_test,pred_rf))
+    
+    model_name = "model_estimator_" + str(i) + ".pkl"
+    filename = "outputs/" + model_name
+    joblib.dump(value= model_rf, filename=filename)
+    run.upload_file(name=model_name, path_or_stream=filename)
+
+    #export model to local
+    run.complete()
+#-----------------------------XX-----------------------------------#
+#Exporting the file
+path = "tmp/"
+try:
+    os.mkdir(path)
+except OSError:
+    print("Creation of directory %s failed" % path)
+else:
+    print("Sucessfully created the directory %s " % path)
+    
+temp_path = path + "training.csv"
+X_train.to_csv(temp_path)
+
+filename1 = "tmp/" + model_name
+joblib.dump(value=model_rf, filename=filename1)
+
+#Now to datastore
+datastr = Datastore.get(ws, "workspaceblobstore")
+datastr.upload(src_dir = path, target_path="", overwrite=True)
+#-----------------------------XX-----------------------------------#
+print("Completed Training Process!")
+
