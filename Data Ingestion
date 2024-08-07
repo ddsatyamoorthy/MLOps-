@@ -1,0 +1,63 @@
+from azureml.core import Workspace, Dataset, Datastore
+import pandas as pd
+import numpy as np
+import os
+from azureml.core.authentication import InteractiveLoginAuthentication
+from datetime import datetime, date, timedelta
+import argparse
+import matplotlib.pyplot as plt 
+import warnings 
+warnings.filterwarnings('ignore')
+
+#-----------------------------XX-----------------------------------#
+# only place in python script not required in pipeline
+interactive_auth = InteractiveLoginAuthentication(tenant_id="3ff0d950-c929-40cd-858d-6d3cbab9e019", force=True)
+
+ws = Workspace(subscription_id= "65d70b70-d4be-4959-8834-424810a76ea4",
+    resource_group= "mlops_project",
+    workspace_name= "diabetes_prediction", auth = interactive_auth) 
+print(ws.name, ws.resource_group, ws.location, ws.subscription_id, sep = '\n')
+
+ #-------------------------data import-------------------------------#
+#Name of blob datastore
+data_store_name = 'workspaceblobstore'
+#Name of Azure blob container 
+container_name = os.getenv("BLOB_CONTAINER", "diabetesmlops") 
+#Name of Storage Account
+account_name = os.getenv("BLOB_ACCOUNTNAME", "diabetesmlops")
+
+
+#-----------------------Argparser--------------------------------#
+parser = argparse.ArgumentParser()
+parser.add_argument("--input-data", type=str)
+args = parser.parse_args()
+
+datastore = Datastore.get(ws, 'workspaceblobstore')
+
+from azureml.core import Run
+run = Run.get_context()
+
+#-----------------------------XX-----------------------------------#
+#Read csv file
+#df = Dataset.Tabular.from_delimited_files(path=[(datastore, "diabetes.csv")]).to_pandas_dataframe()
+df = Dataset.Tabular.from_delimited_files(path=[(datastore, args.input_data)]).to_pandas_dataframe()
+print("Shape of Dataframe", df.shape)
+
+#-----------------------------XX-----------------------------------#
+#Exporting the file
+path = "tmp/"
+try:
+    os.mkdir(path)
+except OSError:
+    print("Creation of directory %s failed" % path)
+else:
+    print("Sucessfully created the directory %s " % path)
+    
+temp_path = path + "ingestion.csv"
+df.to_csv(temp_path)
+
+#Now to datastore
+datastr = Datastore.get(ws, "workspaceblobstore")
+datastr.upload(src_dir = path, target_path="", overwrite=True)
+#-----------------------------XX-----------------------------------#
+print("Completed Ingestion Process!")
